@@ -4,7 +4,7 @@
  * MySQL
  * DataBase Query Builder
  * Simple sql builder like in Kohana 3 (framework)
- * Version: 0.0.1
+ * Version: 0.0.2
  * Author: me@rhrn.ru (send me bug, messages, your SQLs queries)
  *
  * Usage:
@@ -20,10 +20,11 @@
 			->data($insert)
 			->sql();
 
-	#output: INSERT INTO `users` (`firstname`, `middlename`, `lastname`, `created`) VALUES('Roman', 'rhrn', 'Nesterov', '2012-01-12 19:21:49'); 
+	#output: INSERT INTO `users` (`firstname`, `middlename`, `lastname`, `created`) VALUES ('Roman', 'rhrn', 'Nesterov', '2012-01-12 19:21:49'); 
 
 	$sql[] = DBQB::Select('users')
 			->fields('users.*', 'profiles.*')
+			->fields(array('users.name' => 'user_name'))
 			->where('id', '=', 10)
 			->join('profiles', 'LEFT')
 				->on('profiles.user_id', '=', 'users.id')
@@ -39,18 +40,40 @@
 			->set($update)
 			->set('gender', 'male')
 			->where('user_id', '=', 10)
+			->limit(1)
 			->sql();
 
-	#output: UPDATE `profiles` SET `twitter` = 'rhrn', `updated` = '2012-01-12 19:42:48', `gender` = 'male' WHERE `user_id` = '10';
+	#output: UPDATE `profiles` SET `twitter` = 'rhrn', `updated` = '2012-01-13 17:25:13', `gender` = 'male' WHERE `user_id` = '10' LIMIT 1;
 
 
 	$sql[] = DBQB::Delete('messages')
 			->where('messages.id', '=', 10)
+			->order('id', 'ASC')
+			->limit(1)
 			->sql();
 
-	#output: DELETE FROM `messages` WHERE `messages`.`id` = '10';
+	#output: DELETE FROM `messages` WHERE `messages`.`id` = '10' ORDER BY `id` ASC LIMIT 1;
+
+	$sql[] = DBQB::Select('users')
+		->fields('users.firstname')
+		->fields(array('some' => 'thing', 'ololo' => 'realni'))
+		->fields(DBQB::Pure('NOW() AS `now`'), DBQB::Pure('COUNT(*) AS `count`'))
+		->sql();
+
+	#output: SELECT `users`.`firstname`, `qwe` AS `sum`, `qweq` AS `ccc`, NOW() AS `now`, COUNT(*) AS `count` FROM `users`;
+
+	$message1 = array('id' => 1, 'message' => 'hello');
+	$message2 = array('id' => 2, 'message' => 'world');
+
+	$sql[] = DBQB::Insert('messages')
+			->data($message1)
+			->data($message2)
+			->sql();
+
+	#output: INSERT INTO `messages` (`id`,`message`) VALUES ('1', 'hello'), ('2', 'world');
 
 	echo implode("\n", $sql);
+
  *
  */
 
@@ -110,7 +133,7 @@ class DBQB {
 	}
 
 	public function data($data) {
-		$this->collection['data'] = $data;
+		$this->collection['data'][] = $data;
 		return $this;
 	}
 
@@ -160,7 +183,6 @@ class DBQB {
 		$this->collection['where'][] = ')';
 		return $this;
 	}
-
 
 	public function limit($limit, $offset = null) {
                 $this->collection['limit'] = $limit;
@@ -232,7 +254,7 @@ class DBQB {
 
 		$this->sql[] = $this->buildTableName();
 
-		$this->sql[] = $this->buildInsertData($this->collection['data']);
+		$this->sql[] = $this->buildInsertData();
 
 		# $this->sql[] = 'ON DUPLICATE KEY UPDATE';
 
@@ -324,8 +346,13 @@ class DBQB {
 		$this->sql[] = $this->buildSet();
 		$this->sql[] = $this->buildWhere();
 
-		# $this->sql[] = 'ORDER BY';
-		# $this->sql[] = 'LIMIT';
+		if (!empty($this->collection['order'])) {
+			$this->sql[] = $this->buildOrder();
+		}
+
+		if (!empty($this->collection['limit'])) {
+			$this->sql[] = $this->buildLimit();
+		}
 
 		$this->sqlQuery = implode(' ', $this->sql);
 
@@ -351,8 +378,13 @@ class DBQB {
 		$this->sql[] = $this->buildTableName();
 		$this->sql[] = $this->buildWhere();
 
-		# $this->sql[] = 'ORDER BY';
-		# $this->sql[] = 'LIMIT';
+		if (!empty($this->collection['order'])) {
+			$this->sql[] = $this->buildOrder();
+		}
+
+		if (!empty($this->collection['limit'])) {
+			$this->sql[] = $this->buildLimit();
+		}
 
 		$this->sqlQuery = implode(' ', $this->sql);
 	}
@@ -367,15 +399,27 @@ class DBQB {
 
 	public function buildInsertData($data) {
 
-		$fields = array_keys($data);
-                array_walk($fields, 'self::prepareFields');
-                $values = array_values($data);
-                array_walk($values, 'self::prepareValues');
+		$insert = array();
 
-                $fields = implode(', ', $fields);
-                $values = implode(', ', $values);
+		$fields = array_keys($this->collection['data'][0]);
+		array_walk($fields, 'self::prepareFields');
 
-		return '(' . $fields . ') VALUES(' . $values . ')';
+		$insert[] = '(' . implode(',', $fields) . ')';
+		$insert[] = 'VALUES';
+
+		$count = sizeof($this->collection['data']);
+
+		$data = array();
+		for ($i = 0; $i < $count; $i++) {
+
+			$values = array_values($this->collection['data'][$i]);
+			array_walk($values, 'self::prepareValues');
+			$data[] = '(' . implode(', ', $values) . ')';
+		}
+
+		$insert[] = implode(', ', $data);
+
+		return implode(' ', $insert);
 	}
 
 
@@ -385,32 +429,35 @@ class DBQB {
 		$args	= array();
 		
 		if (!empty($this->collection['fields'])) {
+
 			$num = sizeof ($this->collection['fields']);
-		}
 
-		if ($num == 1) {
-			$args = $this->collection['fields'][0];
-		} elseif ($num > 1) {
-			for ($i = 0; $i < $num; $i++) {
-				$args = array_merge($args, $this->collection['fields'][$i]);
-			}
-		}
-	
-		$count = sizeof ($args);
-
-		if ($count) {
-			$fields = array();
-			for ($i = 0; $i < $count; $i++) {
-				if (is_string($args[$i])) {
-					$fields[] = self::prepareFields($args[$i]);
-				} elseif (is_array($args[$i])) {
-					$fields[] = self::prepareFields(key($args[$i])) . ' AS ' . current($args[$i]);
-				} elseif (is_object($args[$i])) {
-					$fields[] = $args[$i]->scalar;
+			if ($num == 1) {
+				$args = $this->collection['fields'][0];
+			} elseif ($num > 1) {
+				for ($i = 0; $i < $num; $i++) {
+					$args = array_merge($args, $this->collection['fields'][$i]);
 				}
 			}
+		
+			$count = sizeof ($args);
 
-			return implode(', ', $fields);
+			if ($count) {
+				$fields = array();
+				for ($i = 0; $i < $count; $i++) {
+					if (is_string($args[$i])) {
+						$fields[] = self::prepareFields($args[$i]);
+					} elseif (is_array($args[$i])) {
+						foreach ($args[$i] as $field => $as_name) {
+							$fields[] = self::prepareFields($field) . ' AS ' . self::prepareFields($as_name);
+						}
+					} elseif (is_object($args[$i])) {
+						$fields[] = $args[$i]->scalar;
+					}
+				}
+				return implode(', ', $fields);
+			}
+
 		} else {
 			return '*';
 		}
